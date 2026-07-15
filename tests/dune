@@ -1,0 +1,6 @@
+(library
+ (name Expect_tests)
+ (libraries Compile)
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect_nobase)))
