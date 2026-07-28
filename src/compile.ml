@@ -1,125 +1,263 @@
 open Types
 
-module Env = struct
-  let count_vars_with_sym env sym =
-    List.length (List.filter (fun x -> String.contains (snd x) sym) env)
+module Parser = struct
+  open Tokens
 
-  let next_sym_var env sym =
-    Printf.sprintf "%c%d" sym (count_vars_with_sym env sym + 1)
-  (* делаем + 1, чтобы в случае s не занимать s0 *)
+  let is_whitespace c = c = ' ' || c = '\n' || c = '\t' || c = '\r'
+  let is_digit c = match c with '0' .. '9' -> true | _ -> false
+  let is_alpha c = match c with 'a' .. 'z' | 'A' .. 'Z' -> true | _ -> false
 
-  let sym_push env var sym =
-    [ (var, Printf.sprintf "%c%d" sym (count_vars_with_sym env sym + 1)) ] @ env
+  let char_list_to_str char_list =
+    List.fold_left (fun s c -> s ^ String.make 1 c) "" char_list
 
-  let get env var = snd (List.find (fun x -> fst x = var) env)
+  let rec to_tokens_while cond char_list =
+    match char_list with
+    | c :: tail when cond c ->
+        let taken, tail1 = to_tokens_while cond tail in
+        (c :: taken, tail1)
+    | _ -> ([], char_list)
 
-  let push_args env vars =
-    List.mapi (fun i x -> (x, Printf.sprintf "a%d" i)) vars @ env
+  let rec to_tokens char_list token_list : token list =
+    match char_list with
+    | [] -> token_list
+    | c :: tail when is_whitespace c -> to_tokens tail token_list
+    | c :: tail when is_digit c ->
+        let taken, tail1 = to_tokens_while is_digit char_list in
+        to_tokens tail1
+          (token_list @ [ Num (int_of_string (char_list_to_str taken)) ])
+    | c :: tail when is_alpha c ->
+        let taken, tail1 =
+          to_tokens_while (fun x -> is_digit x || is_alpha x) char_list
+        in
+        to_tokens tail1
+          (token_list
+          @ [
+              (match char_list_to_str taken with
+              | "fun" -> Fun
+              | "let" -> Let
+              | "in" -> In
+              | "if" -> If
+              | "then" -> Then
+              | "else" -> Else
+              | id -> Id id);
+            ])
+    | '+' :: tail -> to_tokens tail (token_list @ [ Add ])
+    | '-' :: tail -> to_tokens tail (token_list @ [ Sub ])
+    | '*' :: tail -> to_tokens tail (token_list @ [ Mul ])
+    | '<' :: tail -> to_tokens tail (token_list @ [ Less ])
+    | '=' :: tail -> to_tokens tail (token_list @ [ Assign ])
+    | '(' :: tail -> to_tokens tail (token_list @ [ LPar ])
+    | ')' :: tail -> to_tokens tail (token_list @ [ RPar ])
+    | c :: _ -> failwith (Printf.sprintf "unexspected symbol: %c" c)
 
-  let get_args env args =
-    List.mapi
-      (fun i x ->
-        match x with
-        | ANF.INum x -> Assembly.Li (Printf.sprintf "a%d" i, x)
-        | IId x -> Assembly.Mv (Printf.sprintf "a%d" i, get env x))
-      args
+  let to_char_list filename =
+    List.of_seq
+      (String.to_seq (In_channel.with_open_text filename In_channel.input_all))
+end
 
-  let save env =
-    List.mapi (fun i x -> Assembly.Sd (snd x, (i + 1) * 8, "sp")) env
+module ToBeginForm = struct
+  let rec to_begin_form_expr token_list =
+    match token_list with
+    | Tokens.Num n :: tail -> (
+        match tail with
+        | Add :: tail1 ->
+            let expr, expr_tail = to_begin_form_expr tail1 in
+            (BeginForm.Add (Num n, expr), expr_tail)
+        | Sub :: tail1 ->
+            let expr, expr_tail = to_begin_form_expr tail1 in
+            (Sub (Num n, expr), expr_tail)
+        | Mul :: tail1 ->
+            let expr, expr_tail = to_begin_form_expr tail1 in
+            (Mul (Num n, expr), expr_tail)
+        | _ -> (Num n, tail))
+    | _ -> failwith "incorrect expr"
 
-  let load env =
-    List.mapi (fun i x -> Assembly.Ld (snd x, (i + 1) * 8, "sp")) env
+  let rec to_begin_form_def token_list =
+    match token_list with
+    | Tokens.Let :: Id "main" :: Assign :: tail ->
+        let body, next = to_begin_form_def tail in
+        (body, next)
+    | Tokens.Let :: Id name :: Id arg :: Assign :: tail ->
+        let body, next = to_begin_form_def tail in
+        (BeginForm.DefFun (name, arg, body), next)
+    | _ -> to_begin_form_expr token_list
+end
+
+module ToANF = struct
+  let gen_var =
+    let count = ref 0 in
+    fun base ->
+      count := !count + 1;
+      Printf.sprintf "%s_%d" base !count
+
+  let rec to_anf_expr (expr : BeginForm.expr)
+      (hole_expr : ANF.iexpr -> ANF.aexpr) : ANF.aexpr =
+    match expr with
+    | Num n -> hole_expr (INum n)
+    | Id s -> hole_expr (IId s)
+    | Add (a, b) ->
+        let var_name = gen_var "add_res" in
+        to_anf_expr a (fun aprim ->
+            to_anf_expr b (fun bprim ->
+                ALet (var_name, CAdd (aprim, bprim), hole_expr (IId var_name))))
+    | Sub (a, b) ->
+        let var_name = gen_var "sub_res" in
+        to_anf_expr a (fun aprim ->
+            to_anf_expr b (fun bprim ->
+                ALet (var_name, CSub (aprim, bprim), hole_expr (IId var_name))))
+    | Mul (a, b) ->
+        let var_name = gen_var "mul_res" in
+        to_anf_expr a (fun aprim ->
+            to_anf_expr b (fun bprim ->
+                ALet (var_name, CMul (aprim, bprim), hole_expr (IId var_name))))
+    | Less (a, b) ->
+        let var_name = gen_var "less_res" in
+        to_anf_expr a (fun aprim ->
+            to_anf_expr b (fun bprim ->
+                ALet (var_name, CLess (aprim, bprim), hole_expr (IId var_name))))
+    | Ite (cond, th, el) ->
+        let var_name = gen_var "ite_res" in
+        to_anf_expr cond (fun icond ->
+            ALet
+              ( var_name,
+                CIte
+                  ( icond,
+                    to_anf_expr th (fun ie -> ACExpr (CIExpr ie)),
+                    to_anf_expr el (fun ie -> ACExpr (CIExpr ie)) ),
+                hole_expr (IId var_name) ))
+    | Fun (arg, body) ->
+        let body_expr = to_anf_expr body (fun ibody -> ACExpr (CIExpr ibody)) in
+        let fun_name = gen_var "fun" in
+        ALet (fun_name, CFun (arg, body_expr), hole_expr (IId fun_name))
+    | Let (id, body, where) ->
+        to_anf_expr body (fun ibody ->
+            ALet (id, CIExpr ibody, to_anf_expr where hole_expr))
+    | Call (f, arg) ->
+        let var_name = gen_var "call_res" in
+        to_anf_expr f (fun immf ->
+            to_anf_expr arg (fun iarg ->
+                ALet (var_name, CCall (immf, iarg), hole_expr (IId var_name))))
+    | _ -> failwith "unmatched case"
+
+  let to_anf_program (program : BeginForm.program) : ANF.program =
+    {
+      defs =
+        List.map
+          (fun expr ->
+            match expr with
+            | BeginForm.DefFun (name, arg, body) ->
+                ANF.DFun
+                  (name, arg, to_anf_expr body (fun ie -> ACExpr (CIExpr ie)))
+            | _ -> failwith "incorrect def expr")
+          program.defs;
+      main = to_anf_expr program.main (fun ie -> ACExpr (CIExpr ie));
+    }
 end
 
 module ToAssembly = struct
-  open Env
+  (* Код; переменная с результатом; финальное окружение *)
+  type comp_res = Assembly.t list * Env.register * Env.t
 
-  let rec list_delete_end lst =
-    match lst with
-    | [] -> []
-    | [ head; second ] -> [ head ]
-    | head :: tail -> [ head ] @ list_delete_end tail
+  let id_counter = ref 0
 
-  let to_assembly_complex expr env =
+  let gen_id name =
+    id_counter := !id_counter + 1;
+    Printf.sprintf "%s_%d" name !id_counter
+
+  let save_regs sym from until start_offset =
+    List.init
+      (until - from + 1)
+      (fun i -> Assembly.Sd ((sym, i + from), (i + 1) * start_offset, ('x', 2)))
+
+  let load_regs sym from until start_offset =
+    List.init
+      (until - from + 1)
+      (fun i -> Assembly.Ld ((sym, i + from), (i + 1) * start_offset, ('x', 2)))
+
+  let to_assembly_immediate expr env : comp_res =
     match expr with
-    | ANF.CIExpr (INum n) -> [ Assembly.Li (next_sym_var env 's', n) ]
-    | CIExpr (IId a) -> [ Mv (next_sym_var env 's', get env a) ]
-    | CAdd (IId a, IId b) ->
-        [ Add (next_sym_var env 's', get env a, get env b) ]
-    | CAdd (IId a, INum b) -> [ Addi (next_sym_var env 's', get env a, b) ]
-    | CAdd (INum a, IId b) -> [ Addi (next_sym_var env 's', get env b, a) ]
-    | CAdd (INum a, INum b) -> [ Li (next_sym_var env 's', a + b) ]
-    | CSub (IId a, IId b) ->
-        [ Add (next_sym_var env 's', get env a, get env b) ]
-    | CSub (IId a, INum b) -> [ Addi (next_sym_var env 's', get env a, -1 * b) ]
-    | CSub (INum a, IId b) -> [ WIP (ACExpr expr) ]
-    | CSub (INum a, INum b) -> [ Li (next_sym_var env 's', a - b) ]
-    | CMul (IId a, IId b) ->
-        [ Mul (next_sym_var env 's', get env a, get env b) ]
-    | CCall (name, args) ->
-        save env @ get_args env args
-        @ [ Assembly.Call name; Mv (next_sym_var env 's', "a0") ]
-        @ load env
-    | _ -> [ WIP (ACExpr expr) ]
+    | ANF.INum n ->
+        let res_id = Env.first_unused env 's' in
+        ( [ Assembly.Li (res_id, n) ],
+          res_id,
+          Env.push env (gen_id "temp_var") res_id )
+    | IId a -> ([], Env.get env a, env)
 
-  let rec to_assembly_arbitrary expr env =
+  let to_a_bin_oper a b env oper : comp_res =
+    let res_id = Env.first_unused env 's' in
+    let a_code, a_id, a_env = to_assembly_immediate a env in
+    let b_code, b_id, _ = to_assembly_immediate b a_env in
+    (a_code @ b_code @ [ oper (res_id, a_id, b_id) ], res_id, env)
+
+  let rec to_assembly_complex expr env : comp_res =
+    match expr with
+    | ANF.CIExpr a -> to_assembly_immediate a env
+    | CAdd (a, b) -> to_a_bin_oper a b env (fun (x, y, z) -> Add (x, y, z))
+    | CSub (a, b) -> to_a_bin_oper a b env (fun (x, y, z) -> Sub (x, y, z))
+    | CMul (a, b) -> to_a_bin_oper a b env (fun (x, y, z) -> Mul (x, y, z))
+    | CLess (a, b) -> to_a_bin_oper a b env (fun (x, y, z) -> Slt (x, y, z))
+    | CCall (IId name, arg) ->
+        let res_id = Env.first_unused env 's' in
+        let arg_code, arg_id, _ = to_assembly_immediate arg env in
+        ( arg_code
+          @ [
+              Sd (('a', 0), 88, ('x', 2));
+              Mv (('a', 0), arg_id);
+              Call name;
+              Mv (res_id, ('a', 0));
+              Ld (('a', 0), 88, ('x', 2));
+            ],
+          res_id,
+          env )
+    | CIte (cond, th, el) ->
+        let res_id = Env.first_unused env 's' in
+        let cond_code, cond_id, cond_env = to_assembly_immediate cond env in
+        let th_code, th_id, th_env = to_assembly_arbitrary th cond_env in
+        let el_code, el_id, _ = to_assembly_arbitrary el th_env in
+        let el_br = gen_id ".else" in
+        let if_end_br = gen_id ".if_end" in
+        ( cond_code
+          @ [ Assembly.Beqz (cond_id, el_br) ]
+          @ th_code
+          @ [ Assembly.Mv (res_id, th_id); J if_end_br; Branch el_br ]
+          @ el_code
+          @ [ Assembly.Mv (res_id, el_id); Branch if_end_br ],
+          res_id,
+          env )
+    | a -> ([ WIP (ACExpr a) ], (' ', -1), Env.empty)
+
+  and to_assembly_arbitrary expr env : comp_res =
     match expr with
     | ANF.ACExpr e -> to_assembly_complex e env
-    | ALet (id, body, where) -> (
-        to_assembly_complex body env
-        @
-        let env = sym_push env id 's' in
-        match where with
-        | ACExpr e ->
-            to_assembly_complex e env
-            @ [
-                Mv ("a0", next_sym_var env 's');
-                Ld ("ra", 0, "sp");
-                Addi ("sp", "sp", 256);
-                Ret;
-              ]
-        | _ -> to_assembly_arbitrary where env)
-    | AIte (cond, th, el) ->
-        (match cond with
-          | CLesseq (INum a, INum b) ->
-              [ Assembly.Li ("t0", a); Li ("t1", b); Ble ("t0", "t1", ".then") ]
-          | CLesseq (IId a, INum b) ->
-              [ Li ("t0", b); Ble (get env a, "t0", ".then") ]
-          | CLesseq (IId a, IId b) -> [ Ble (get env a, get env b, ".then") ]
-          | _ -> [ WIP expr ])
-        @ (match el with
-          | ACExpr e ->
-              to_assembly_complex e env
-              @ [
-                  Mv ("a0", next_sym_var env 's');
-                  Ld ("ra", 0, "sp");
-                  Addi ("sp", "sp", 256);
-                  Ret;
-                ]
-          | _ -> to_assembly_arbitrary el env)
-        @ [ Assembly.J ".if_end"; Branch ".then" ]
-        @ (match th with
-          | ACExpr e ->
-              to_assembly_complex e env
-              @ [
-                  Mv ("a0", next_sym_var env 's');
-                  Ld ("ra", 0, "sp");
-                  Addi ("sp", "sp", 256);
-                  Ret;
-                ]
-          | _ -> to_assembly_arbitrary th env)
-        @ [ Branch ".if_end" ]
-    | AFun ("main", args, body) ->
-        [
-          Assembly.Branch "_start"; Addi ("sp", "sp", -256); Sd ("ra", 0, "sp");
-        ]
-        @ list_delete_end (to_assembly_arbitrary body (push_args env args))
-        @ [ Assembly.Li ("a7", 93); Ecall ]
-    | AFun (id, args, body) ->
-        [ Assembly.Branch id; Addi ("sp", "sp", -256); Sd ("ra", 0, "sp") ]
-        @ to_assembly_arbitrary body (push_args env args)
+    | ALet (id, body, where) ->
+        let body_code, body_id, body_env = to_assembly_complex body env in
+        let env = Env.push body_env id body_id in
+        let where_code, where_id, where_env = to_assembly_arbitrary where env in
+        (body_code @ where_code, where_id, where_env)
 
-  let to_assembly_program expr_list =
+  let to_assembly_def expr =
+    match expr with
+    | ANF.DFun (name, arg, body) ->
+        let body_code, body_id, body_env =
+          to_assembly_arbitrary body (Env.push_next Env.empty arg 'a')
+        in
+        [
+          Assembly.Branch name;
+          Addi (('x', 2), ('x', 2), -256);
+          Sd (('x', 1), 0, ('x', 2));
+        ]
+        @ save_regs 's' 2 11 8 @ body_code
+        @ [ Assembly.Mv (('a', 0), body_id) ]
+        @ load_regs 's' 2 11 8
+        @ [ Ld (('x', 1), 0, ('x', 2)); Addi (('x', 2), ('x', 2), 256); Ret ]
+
+  let to_assembly_program (program : ANF.program) =
+    let main_code, main_id, main_env =
+      to_assembly_arbitrary program.main Env.empty
+    in
     [ Assembly.Section ".text"; Global "_start" ]
-    @ List.concat (List.map (fun x -> to_assembly_arbitrary x []) expr_list)
+    @ [ Assembly.Branch "_start"; Addi (('x', 2), ('x', 2), -256) ]
+    @ main_code
+    @ [ Assembly.Mv (('a', 0), main_id); Li (('a', 7), 93); Ecall ]
+    @ List.concat (List.map to_assembly_def program.defs)
 end
