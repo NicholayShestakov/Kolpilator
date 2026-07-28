@@ -50,37 +50,101 @@ module Parser = struct
     | ')' :: tail -> to_tokens tail (token_list @ [ RPar ])
     | c :: _ -> failwith (Printf.sprintf "unexspected symbol: %c" c)
 
+  let to_tokens_program char_list = to_tokens char_list []
+
   let to_char_list filename =
     List.of_seq
       (String.to_seq (In_channel.with_open_text filename In_channel.input_all))
 end
 
 module ToBeginForm = struct
-  let rec to_begin_form_expr token_list =
+  let rec to_begin_form_imm token_list =
     match token_list with
-    | Tokens.Num n :: tail -> (
+    | Tokens.Num n :: tail -> (BeginForm.Num n, tail)
+    | Id i :: tail -> (
         match tail with
-        | Add :: tail1 ->
-            let expr, expr_tail = to_begin_form_expr tail1 in
-            (BeginForm.Add (Num n, expr), expr_tail)
-        | Sub :: tail1 ->
-            let expr, expr_tail = to_begin_form_expr tail1 in
-            (Sub (Num n, expr), expr_tail)
-        | Mul :: tail1 ->
-            let expr, expr_tail = to_begin_form_expr tail1 in
-            (Mul (Num n, expr), expr_tail)
-        | _ -> (Num n, tail))
-    | _ -> failwith "incorrect expr"
+        | Id arg :: tail1 -> (BeginForm.Call (Id i, Id arg), tail1)
+        | Num arg :: tail1 -> (BeginForm.Call (Id i, Num arg), tail1)
+        | LPar :: tail1 -> (
+            let in_par, in_par_tail = to_begin_form_expr tail1 in
+            match in_par_tail with
+            | Tokens.RPar :: tail2 -> (BeginForm.Call (Id i, in_par), tail2)
+            | _ -> failwith "missing closing parenthesis")
+        | _ -> (BeginForm.Id i, tail))
+    | LPar :: tail -> (
+        let in_par, in_par_tail = to_begin_form_expr tail in
+        match in_par_tail with
+        | Tokens.RPar :: tail1 -> (in_par, tail1)
+        | _ -> failwith "missing closing parenthesis")
+    | _ -> failwith "incorrect immediate"
 
-  let rec to_begin_form_def token_list =
+  and to_begin_form_high_expr token_list =
+    let left, left_tail = to_begin_form_imm token_list in
+    let rec loop acc current_tail =
+      match current_tail with
+      | Tokens.Mul :: tail ->
+          let right, right_tail = to_begin_form_imm tail in
+          loop (BeginForm.Mul (acc, right)) right_tail
+      | _ -> (acc, current_tail)
+    in
+    loop left left_tail
+
+  and to_begin_form_expr token_list =
+    let left, left_tail = to_begin_form_high_expr token_list in
+    let rec loop acc current_tail =
+      match current_tail with
+      | Tokens.Add :: tail ->
+          let right, right_tail = to_begin_form_high_expr tail in
+          loop (BeginForm.Add (acc, right)) right_tail
+      | Sub :: tail ->
+          let right, right_tail = to_begin_form_high_expr tail in
+          loop (Sub (acc, right)) right_tail
+      | Less :: tail ->
+          let right, right_tail = to_begin_form_high_expr tail in
+          loop (Less (acc, right)) right_tail
+      | _ -> (acc, current_tail)
+    in
+    loop left left_tail
+
+  let rec to_begin_form_block token_list =
     match token_list with
-    | Tokens.Let :: Id "main" :: Assign :: tail ->
-        let body, next = to_begin_form_def tail in
-        (body, next)
-    | Tokens.Let :: Id name :: Id arg :: Assign :: tail ->
-        let body, next = to_begin_form_def tail in
-        (BeginForm.DefFun (name, arg, body), next)
+    | Tokens.Let :: Id id :: Assign :: tail -> (
+        let body, body_tail = to_begin_form_block tail in
+        match body_tail with
+        | Tokens.In :: tail1 ->
+            let where, next = to_begin_form_block tail1 in
+            (BeginForm.Let (id, body, where), next)
+        | _ -> failwith "missing 'in' after 'let' body")
+    | If :: tail -> (
+        let cond, cond_tail = to_begin_form_expr tail in
+        match cond_tail with
+        | Then :: tail1 -> (
+            let th, th_tail = to_begin_form_block tail1 in
+            match th_tail with
+            | Else :: tail2 ->
+                let el, next = to_begin_form_block tail2 in
+                (Ite (cond, th, el), next)
+            | _ -> failwith "missing 'else' after 'then' body")
+        | _ -> failwith "missing 'then' after 'if' cond")
     | _ -> to_begin_form_expr token_list
+
+  let rec to_begin_form_defs token_list (program : BeginForm.program) =
+    match token_list with
+    | [] -> program
+    | Tokens.Let :: Id "main" :: Assign :: tail ->
+        let body, next = to_begin_form_block tail in
+        to_begin_form_defs next { defs = program.defs; main = body }
+    | Let :: Id name :: Id arg :: Assign :: tail ->
+        let body, next = to_begin_form_block tail in
+        to_begin_form_defs next
+          {
+            defs = program.defs @ [ BeginForm.DefFun (name, arg, body) ];
+            main = program.main;
+          }
+    | _ -> failwith "expression not in function"
+
+  let to_begin_form_program token_list =
+    to_begin_form_defs token_list { defs = []; main = Num 0 }
 end
 
 module ToANF = struct
