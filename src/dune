@@ -1,8 +1,13 @@
 (library
- (name Compile)
- (modules Compile)
- (libraries Types))
+ (name Types)
+ (modules types))
 
 (library
- (name Types)
- (modules Types))
+ (name Compile)
+ (modules compile)
+ (libraries Types))
+
+(executable
+ (name main)
+ (modules main)
+ (libraries Compile))
