@@ -325,3 +325,11 @@ module ToAssembly = struct
     @ [ Assembly.Mv (('a', 0), main_id); Li (('a', 7), 93); Ecall ]
     @ List.concat (List.map to_assembly_def program.defs)
 end
+
+module ToFile = struct
+  let to_file assembly_list filename =
+    let program_string = Assembly.to_str assembly_list in
+    let channel = open_out filename in
+    output_string channel program_string;
+    close_out channel
+end
