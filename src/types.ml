@@ -165,35 +165,40 @@ module Assembly = struct
     | Ecall
     | WIP of ANF.aexpr
 
-  let print_expr expr =
+  let to_str_expr expr =
     match expr with
-    | Section s -> printf ".section %s\n" s
-    | Global s -> printf ".global %s\n" s
-    | Branch br -> printf "%s:\n" br
-    | Li (id, n) -> printf "    li %s, %d\n" (to_str id) n
-    | Sd (id, off, s) -> printf "    sd %s, %d(%s)\n" (to_str id) off (to_str s)
-    | Ld (id, off, s) -> printf "    ld %s, %d(%s)\n" (to_str id) off (to_str s)
-    | Mv (id, s) -> printf "    mv %s, %s\n" (to_str id) (to_str s)
+    | Section s -> sprintf ".section %s\n" s
+    | Global s -> sprintf ".global %s\n" s
+    | Branch br -> sprintf "%s:\n" br
+    | Li (id, n) -> sprintf "    li %s, %d\n" (to_str id) n
+    | Sd (id, off, s) ->
+        sprintf "    sd %s, %d(%s)\n" (to_str id) off (to_str s)
+    | Ld (id, off, s) ->
+        sprintf "    ld %s, %d(%s)\n" (to_str id) off (to_str s)
+    | Mv (id, s) -> sprintf "    mv %s, %s\n" (to_str id) (to_str s)
     | Addi (res, a, b) ->
-        printf "    addi %s, %s, %d\n" (to_str res) (to_str a) b
+        sprintf "    addi %s, %s, %d\n" (to_str res) (to_str a) b
     | Add (res, a, b) ->
-        printf "    add %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
+        sprintf "    add %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
     | Sub (res, a, b) ->
-        printf "    sub %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
+        sprintf "    sub %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
     | Mul (res, a, b) ->
-        printf "    mul %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
-    | J br -> printf "    j %s\n" br
+        sprintf "    mul %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
+    | J br -> sprintf "    j %s\n" br
     | Slti (res, a, b) ->
-        printf "    addi %s, %s, %d\n" (to_str res) (to_str a) b
+        sprintf "    addi %s, %s, %d\n" (to_str res) (to_str a) b
     | Slt (res, a, b) ->
-        printf "    slt %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
-    | Ble (a, b, br) -> printf "    ble %s, %s, %s\n" (to_str a) (to_str b) br
-    | Beq (a, b, br) -> printf "    beq %s, %s, %s\n" (to_str a) (to_str b) br
-    | Beqz (a, br) -> printf "    beqz %s, %s\n" (to_str a) br
-    | Call br -> printf "    call %s\n" br
-    | Ret -> printf "    ret\n"
-    | Ecall -> printf "    ecall\n"
-    | WIP e -> printf "WIP: %s" (ANF.str_aexpr e)
+        sprintf "    slt %s, %s, %s\n" (to_str res) (to_str a) (to_str b)
+    | Ble (a, b, br) -> sprintf "    ble %s, %s, %s\n" (to_str a) (to_str b) br
+    | Beq (a, b, br) -> sprintf "    beq %s, %s, %s\n" (to_str a) (to_str b) br
+    | Beqz (a, br) -> sprintf "    beqz %s, %s\n" (to_str a) br
+    | Call br -> sprintf "    call %s\n" br
+    | Ret -> sprintf "    ret\n"
+    | Ecall -> sprintf "    ecall\n"
+    | WIP e -> sprintf "WIP: %s" (ANF.str_aexpr e)
 
-  let print expr_list = List.iter print_expr expr_list
+  let to_str expr_list =
+    List.fold_left (fun str x -> str ^ to_str_expr x) "" expr_list
+
+  let print expr_list = printf "%s" (to_str expr_list)
 end
