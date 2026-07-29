@@ -3,7 +3,7 @@ open Compile
 let () =
   if Array.length Sys.argv < 3 then
     failwith
-      "correct run format: dune exec ./main.exe -- <to_compile_file_path> \
+      "correct run format: dune exec src/main.exe -- <to_compile_file_path> \
        <compiled_file_path>"
   else
     let to_compile = Sys.argv.(1) in
