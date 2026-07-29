@@ -9,5 +9,6 @@
 
 (executable
  (name main)
+ (public_name kolpilator)
  (modules main)
  (libraries Compile))
