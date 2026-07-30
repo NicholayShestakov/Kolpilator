@@ -171,6 +171,7 @@ module ToANF = struct
       count := !count + 1;
       Printf.sprintf "%s_%d" base !count
 
+  (* Переводит AST выражение в ANF путём выдачи всем сложным операндам промежуточных переменных *)
   let rec to_anf_expr (expr : BeginForm.expr)
       (hole_expr : ANF.iexpr -> ANF.aexpr) : ANF.aexpr =
     match expr with
@@ -220,6 +221,7 @@ module ToANF = struct
                 ALet (var_name, CCall (immf, iarg), hole_expr (IId var_name))))
     | _ -> failwith "unmatched case"
 
+  (* Переводит программу в ANF представление путём применения to_anf_expr к каждой глобальной функции и к main *)
   let to_anf_program (program : BeginForm.program) : ANF.program =
     {
       defs =
@@ -235,26 +237,32 @@ module ToANF = struct
     }
 end
 
+(* Из ANF в ассемблер *)
 module ToAssembly = struct
   (* Код; переменная с результатом; финальное окружение *)
   type comp_res = Assembly.t list * Env.register * Env.t
 
+  (* Глобальный счётчик для выдачи всем веткам и переменным уникальных id *)
   let id_counter = ref 0
 
+  (* Выдача уникального id с данным именем *)
   let gen_id name =
     id_counter := !id_counter + 1;
     Printf.sprintf "%s_%d" name !id_counter
 
+  (* Генерация ассемблера для сохранения регистров на стек в заданном количестве и с заданным отступом *)
   let save_regs sym from until start_offset =
     List.init
       (until - from + 1)
       (fun i -> Assembly.Sd ((sym, i + from), (i + 1) * start_offset, ('x', 2)))
 
+  (* Генерация ассемблера для загрузки регистров со стека в заданном количестве и с заданным отступом *)
   let load_regs sym from until start_offset =
     List.init
       (until - from + 1)
       (fun i -> Assembly.Ld ((sym, i + from), (i + 1) * start_offset, ('x', 2)))
 
+  (* Перевод мгновенного выражения в ассемблер с выделением временной переменной в случае числа *)
   let to_assembly_immediate expr env : comp_res =
     match expr with
     | ANF.INum n ->
@@ -264,12 +272,14 @@ module ToAssembly = struct
           Env.push env (gen_id "temp_var") res_id )
     | IId a -> ([], Env.get env a, env)
 
+  (* Перевод бинарного оператора с операндами в ассемблер *)
   let to_a_bin_oper a b env oper : comp_res =
     let res_id = Env.first_unused env 's' in
     let a_code, a_id, a_env = to_assembly_immediate a env in
     let b_code, b_id, _ = to_assembly_immediate b a_env in
     (a_code @ b_code @ [ oper (res_id, a_id, b_id) ], res_id, env)
 
+  (* Перевод в ассемблер комплексного выражения *)
   let rec to_assembly_complex expr env : comp_res =
     match expr with
     | ANF.CIExpr a -> to_assembly_immediate a env
@@ -307,6 +317,7 @@ module ToAssembly = struct
           env )
     | a -> ([ WIP (ACExpr a) ], (' ', -1), Env.empty)
 
+  (* Перевод в ассемблер арбитрари-выражения *)
   and to_assembly_arbitrary expr env : comp_res =
     match expr with
     | ANF.ACExpr e -> to_assembly_complex e env
@@ -316,6 +327,7 @@ module ToAssembly = struct
         let where_code, where_id, where_env = to_assembly_arbitrary where env in
         (body_code @ where_code, where_id, where_env)
 
+  (* Перевод в ассемблер глобальной функции с сохранением сохраняемых регистров *)
   let to_assembly_def expr =
     match expr with
     | ANF.DFun (name, arg, body) ->
@@ -332,6 +344,7 @@ module ToAssembly = struct
         @ load_regs 's' 2 11 8
         @ [ Ld (('x', 1), 0, ('x', 2)); Addi (('x', 2), ('x', 2), 256); Ret ]
 
+  (* Перевод в ассемблер всей программы с обработкой main *)
   let to_assembly_program (program : ANF.program) =
     let main_code, main_id, main_env =
       to_assembly_arbitrary program.main Env.empty
@@ -343,6 +356,7 @@ module ToAssembly = struct
     @ List.concat (List.map to_assembly_def program.defs)
 end
 
+(* Генерация файла с ассемблером *)
 module ToFile = struct
   let to_file assembly_list filename =
     let program_string = Assembly.to_str assembly_list in
