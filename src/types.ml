@@ -39,29 +39,45 @@ module Tokens = struct
   let print token_list = List.iter print_token token_list
 end
 
+(* Он же AST *)
 module BeginForm = struct
   type expr =
-    | Num of int
-    | Id of string
-    | Add of expr * expr
-    | Sub of expr * expr
-    | Mul of expr * expr
-    | Less of expr * expr
+    | Num of int (* Целое число *)
+    | Id of string (* Идентификатор (переменная, название функции) *)
+    | Add of expr * expr (* <expr> + <expr> *)
+    | Sub of expr * expr (* <expr> - <expr> *)
+    | Mul of expr * expr (* <expr> * <expr> *)
+    | Less of expr * expr (* <expr> < <expr> *)
     | Fun of string * expr
-    | Let of string * expr * expr
+      (* Функция от аргумента <string> с телом <expr> (на текущий момент не реализовано) *)
+    | Let of string * expr * expr (* let <name> = <body> in <where> *)
     | Ite of expr * expr * expr
-    | Call of expr * expr
-    | DefFun of string * string * expr
+      (* if <cond> then <th> else <el>, где cond = 0 - ложь, cond != 0 - истина *)
+    | Call of expr * expr (* Вызов функции от переданного аргумента *)
+    | DefFun of
+        string
+        * string
+        * expr (* Глобальная функция let <name> <arg> = <body> *)
 
+  (* Программа представляется на данном уровне как список глобальных функций и main выражение *)
   type program = { defs : expr list; main : expr }
 end
 
 module StringMap = Map.Make (String)
 
+(* 
+Предоставляет двухсторонний словарь (при добавлении затирает предыдущий элемент как по ключу, так и по значению).
+Используется для хранения текущего окружения при преобразовании из AST в ANF.
+Ключ - имя переменной, значение - регистр.
+*)
 module Env = struct
   type register = char * int
   type t = register StringMap.t
 
+  (* 
+  Выдаёт первый свободный регистр с данным символом. 
+  Нет проверки на корректность символа и на реальное существование регистра с таким номером. 
+  *)
   let first_unused (env : t) sym =
     let number =
       StringMap.fold
@@ -71,39 +87,68 @@ module Env = struct
     in
     (sym, number)
 
+  (*
+  Возвращает новое окружение с добавленным переданным элементом.
+  Затирает старые элементы с таким же регистром или названием переменной.
+  *)
   let push (env : t) var (reg : register) =
     StringMap.add var reg (StringMap.filter (fun _ v -> not (v = reg)) env)
 
+  (*
+  Возвращает новое окружение с добавленным переданным ключом, которому сопоставляет свободный регистр нужного символа.
+  Затирает старый элемент с таким же названием переменной.
+  *)
   let push_next (env : t) var sym = push env var (first_unused env sym)
 
+  (*
+  Выдаёт, в каком регистре хранится переменная.
+  Если переменной нет, возвращает регистр вида (n, -1)
+  *)
   let get (env : t) var =
     if StringMap.find_opt var env = None then ('n', -1)
     else StringMap.find var env
 
+  (*
+  Возвращает пустое окружение.
+  *)
   let empty = StringMap.empty
+
+  (*
+  Преобразовывает регистр из формата пары в формат строки.
+  *)
   let to_str (reg : register) = Printf.sprintf "%c%d" (fst reg) (snd reg)
 end
 
 module ANF = struct
-  type iexpr = INum of int | IId of string
+  (* Immediate выражения *)
+  type iexpr =
+    | INum of int (* Целое число *)
+    | IId of string (* Идентификатор (переменная, название функции) *)
 
+  (* Complex выражения (вызываются только от immediate за исключением тех, где моментальное вычисление всё ломает) *)
   and cexpr =
-    | CAdd of iexpr * iexpr
-    | CSub of iexpr * iexpr
-    | CMul of iexpr * iexpr
-    | CLess of iexpr * iexpr
+    | CAdd of iexpr * iexpr (* <expr> + <expr> *)
+    | CSub of iexpr * iexpr (* <expr> - <expr> *)
+    | CMul of iexpr * iexpr (* <expr> * <expr> *)
+    | CLess of iexpr * iexpr (* <expr> < <expr> *)
     | CFun of string * aexpr
-    | CCall of iexpr * iexpr
+      (* Функция от аргумента <string> с телом <aexpr> (на текущий момент не реализовано) *)
+    | CCall of iexpr * iexpr (* Вызов функции от переданного аргумента *)
     | CIte of iexpr * aexpr * aexpr
-      (* if <cond> then <then> else <else>, где cond = 0 - ложь, cond != 0 - истина *)
+      (* if <cond> then <th> else <el>, где cond = 0 - ложь, cond != 0 - истина *)
     | CIExpr of iexpr
+  (* Прослойка для моментов, где нужно immediate выдать за complex *)
 
+  (* Arbitrary выражения *)
   and aexpr =
     | ALet of string * cexpr * aexpr (* let <id> = <body> in <where> *)
     | ACExpr of cexpr
+  (* Прослойка для моментов, где нужно complex выдать за arbitrary *)
 
+  (* Глобальные определения *)
   and def = DFun of string * string * aexpr
 
+  (* Программа представляется на данном уровне как список глобальных функций и main выражение *)
   type program = { defs : def list; main : aexpr }
 
   let rec str_iexpr expr =
