@@ -1,5 +1,6 @@
 open Types
 
+(* Токенизация программы *)
 module Parser = struct
   open Tokens
 
@@ -10,6 +11,10 @@ module Parser = struct
   let char_list_to_str char_list =
     List.fold_left (fun s c -> s ^ String.make 1 c) "" char_list
 
+  (* 
+  Бежит по списку символов до тех пор, пока выполняется условие.
+  Возвращает полученный подсписок и и остаток списка.
+  *)
   let rec to_tokens_while cond char_list =
     match char_list with
     | c :: tail when cond c ->
@@ -17,6 +22,7 @@ module Parser = struct
         (c :: taken, tail1)
     | _ -> ([], char_list)
 
+  (* Преобразовывает список символов в список токенов *)
   let rec to_tokens char_list token_list : token list =
     match char_list with
     | [] -> token_list
@@ -50,14 +56,18 @@ module Parser = struct
     | ')' :: tail -> to_tokens tail (token_list @ [ RPar ])
     | c :: _ -> failwith (Printf.sprintf "unexspected symbol: %c" c)
 
+  (* Прослойка, чтобы не передавать пустой список в to_tokens вручную *)
   let to_tokens_program char_list = to_tokens char_list []
 
+  (* Открывает файл по переданному пути и превращает текст из него в список символов *)
   let to_char_list filename =
     List.of_seq
       (String.to_seq (In_channel.with_open_text filename In_channel.input_all))
 end
 
+(* Парсинг списка токенов в AST (BeginForm) *)
 module ToBeginForm = struct
+  (* Для выражений с высшим приоритетом (числа, переменные, вызовы функций, скобки) *)
   let rec to_begin_form_imm token_list =
     match token_list with
     | Tokens.Num n :: tail -> (BeginForm.Num n, tail)
@@ -78,6 +88,7 @@ module ToBeginForm = struct
         | _ -> failwith "missing closing parenthesis")
     | _ -> failwith "incorrect immediate"
 
+  (* Для выражений с повышенным приоритетом (умножение) *)
   and to_begin_form_high_expr token_list =
     let left, left_tail = to_begin_form_imm token_list in
     let rec loop acc current_tail =
@@ -89,6 +100,7 @@ module ToBeginForm = struct
     in
     loop left left_tail
 
+  (* Для выражений с низким приоритетом (сложение, вычитание, сравнение) *)
   and to_begin_form_expr token_list =
     let left, left_tail = to_begin_form_high_expr token_list in
     let rec loop acc current_tail =
@@ -106,6 +118,7 @@ module ToBeginForm = struct
     in
     loop left left_tail
 
+  (* Для блоков выражений (let, if) *)
   let rec to_begin_form_block token_list =
     match token_list with
     | Tokens.Let :: Id id :: Assign :: tail -> (
@@ -128,6 +141,7 @@ module ToBeginForm = struct
         | _ -> failwith "missing 'then' after 'if' cond")
     | _ -> to_begin_form_expr token_list
 
+  (* Для глобальных функций и для main *)
   let rec to_begin_form_defs token_list (program : BeginForm.program) =
     match token_list with
     | [] -> program
@@ -143,11 +157,14 @@ module ToBeginForm = struct
           }
     | _ -> failwith "expression not in function"
 
+  (* Прослойка, чтобы не передавать пустую программу вручную *)
   let to_begin_form_program token_list =
     to_begin_form_defs token_list { defs = []; main = Num 0 }
 end
 
+(* Из AST в ANF *)
 module ToANF = struct
+  (* Для генерации уникальных имён переменных, при добавлении промежуточных переменных *)
   let gen_var =
     let count = ref 0 in
     fun base ->
